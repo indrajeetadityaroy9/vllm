@@ -6,6 +6,10 @@
 #include <torch/library.h>
 #include <torch/version.h>
 
+#ifdef VLLM_FAULT_INJECT
+#include "fault_injection/fault_injector.cuh"
+#endif
+
 // Note on op signatures:
 // The X_meta signatures are for the meta functions corresponding to op X.
 // They must be kept in sync with the signature for X. Generally, only
@@ -675,6 +679,62 @@ TORCH_LIBRARY_EXPAND(TORCH_EXTENSION_NAME, ops) {
       "SymInt n, SymInt group_size, SymInt sm_count, SymInt sm_version, SymInt "
       "CUBLAS_M_THRESHOLD, bool has_zp, bool n32k16_reorder) -> Tensor");
   //  conditionally compiled so impl in source file
+#endif
+
+#ifdef VLLM_FAULT_INJECT
+  // Fault injection configuration for KV cache testing
+  ops.def(
+      "set_fault_injection_config("
+      "bool enabled, int site, int subsite, int model, "
+      "float rate, int flip_count, int burst_len, "
+      "int msb_policy, int msb_mask, int page_scope, int seed) -> ()");
+  ops.impl("set_fault_injection_config", [](bool enabled, int64_t site,
+                                            int64_t subsite, int64_t model,
+                                            double rate, int64_t flip_count,
+                                            int64_t burst_len,
+                                            int64_t msb_policy,
+                                            int64_t msb_mask,
+                                            int64_t page_scope, int64_t seed) {
+    // Validate parameter bounds
+    TORCH_CHECK(site >= 0 && site <= 2,
+                "Invalid fault injection site: ", site,
+                ". Must be 0 (KV_WRITE), 1 (KV_READ), or 2 (BOTH)");
+    TORCH_CHECK(subsite >= 0 && subsite <= 1,
+                "Invalid fault injection subsite: ", subsite,
+                ". Must be 0 (CODEWORD) or 1 (VALUE)");
+    TORCH_CHECK(model >= 0 && model <= 3,
+                "Invalid fault injection model: ", model,
+                ". Must be 0-3 (random, burst, msb_biased, page_local)");
+    TORCH_CHECK(rate >= 0.0 && rate <= 1.0,
+                "Invalid fault injection rate: ", rate,
+                ". Must be between 0.0 and 1.0");
+    TORCH_CHECK(flip_count >= 1 && flip_count <= 8,
+                "Invalid fault injection flip_count: ", flip_count,
+                ". Must be between 1 and 8");
+    TORCH_CHECK(burst_len >= 1 && burst_len <= 64,
+                "Invalid fault injection burst_len: ", burst_len,
+                ". Must be between 1 and 64");
+    TORCH_CHECK(msb_policy >= 0 && msb_policy <= 2,
+                "Invalid fault injection msb_policy: ", msb_policy,
+                ". Must be 0-2 (BYTE_TOPBITS, FP16_EXPONENT, INT4_NIBBLE)");
+    TORCH_CHECK(msb_mask >= 0 && msb_mask <= 255,
+                "Invalid fault injection msb_mask: ", msb_mask,
+                ". Must be between 0x00 and 0xFF");
+
+    vllm::fault_injection::FaultSpec spec;
+    spec.enabled = enabled;
+    spec.site = static_cast<uint8_t>(site);
+    spec.subsite = static_cast<uint8_t>(subsite);
+    spec.model = static_cast<uint8_t>(model);
+    spec.rate = static_cast<float>(rate);
+    spec.flip_count = static_cast<uint8_t>(flip_count);
+    spec.burst_len = static_cast<uint8_t>(burst_len);
+    spec.msb_policy = static_cast<uint8_t>(msb_policy);
+    spec.msb_mask = static_cast<uint8_t>(msb_mask);
+    spec.page_scope = static_cast<int32_t>(page_scope);
+    spec.seed = static_cast<uint64_t>(seed);
+    vllm::fault_injection::set_fault_spec(spec);
+  });
 #endif
 }
 

@@ -3088,3 +3088,87 @@ if hasattr(torch.ops._C, "hadacore_transform"):
     @register_fake("_C::hadacore_transform")
     def _hadacore_transform_fake(x: torch.Tensor, inplace: bool) -> torch.Tensor:
         return torch.empty_like(x) if not inplace else x
+
+
+# Fault injection ops (requires VLLM_FAULT_INJECT compile flag)
+def set_fault_injection_config(
+    enabled: bool,
+    site: str,
+    subsite: str,
+    model: str,
+    rate: float,
+    flip_count: int,
+    burst_len: int,
+    msb_policy: str,
+    msb_mask: int,
+    page_scope: int,
+    seed: int,
+) -> None:
+    """Update CUDA constant memory with fault injection config.
+
+    This function sets the fault injection parameters in GPU constant memory,
+    which are then read by the KV cache kernels to inject bit-flip faults.
+
+    Requires vLLM to be compiled with VLLM_FAULT_INJECT=ON.
+
+    Args:
+        enabled: Enable/disable fault injection
+        site: Injection site - "KV_WRITE", "KV_READ", or "BOTH"
+        subsite: "CODEWORD" (ECC-relevant) or "VALUE" (compute sensitivity)
+        model: Fault model - "random", "burst", "msb_biased", "page_local"
+        rate: Probability a block is corrupted (0.0-1.0)
+        flip_count: Number of bit flips per corrupted block (max 8)
+        burst_len: Consecutive bits to flip in burst model
+        msb_policy: "BYTE_TOPBITS", "FP16_EXPONENT", "INT4_NIBBLE"
+        msb_mask: Bitmask for BYTE_TOPBITS policy
+        page_scope: Physical block number to target (-1 = all)
+        seed: Random seed for deterministic replay
+    """
+    if not hasattr(torch.ops._C, "set_fault_injection_config"):
+        logger.warning_once(
+            "Fault injection not available. "
+            "Compile vLLM with VLLM_FAULT_INJECT=ON to enable."
+        )
+        return
+
+    # Convert string enums to integer codes
+    site_map = {"KV_WRITE": 0, "KV_READ": 1, "BOTH": 2}
+    subsite_map = {"CODEWORD": 0, "VALUE": 1}
+    model_map = {"random": 0, "burst": 1, "msb_biased": 2, "page_local": 3}
+    msb_policy_map = {"BYTE_TOPBITS": 0, "FP16_EXPONENT": 1, "INT4_NIBBLE": 2}
+
+    # Validate enum values - raise on invalid input instead of silent fallback
+    if site not in site_map:
+        raise ValueError(
+            f"Invalid fault injection site: {site!r}. "
+            f"Must be one of: {list(site_map.keys())}"
+        )
+    if subsite not in subsite_map:
+        raise ValueError(
+            f"Invalid fault injection subsite: {subsite!r}. "
+            f"Must be one of: {list(subsite_map.keys())}"
+        )
+    if model not in model_map:
+        raise ValueError(
+            f"Invalid fault injection model: {model!r}. "
+            f"Must be one of: {list(model_map.keys())}"
+        )
+    if msb_policy not in msb_policy_map:
+        raise ValueError(
+            f"Invalid fault injection msb_policy: {msb_policy!r}. "
+            f"Must be one of: {list(msb_policy_map.keys())}"
+        )
+
+    torch.ops._C.set_fault_injection_config(
+        enabled,
+        site_map[site],
+        subsite_map[subsite],
+        model_map[model],
+        rate,
+        flip_count,
+        burst_len,
+        msb_policy_map[msb_policy],
+        msb_mask,
+        page_scope,
+        seed,
+    )

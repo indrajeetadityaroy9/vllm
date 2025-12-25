@@ -32,6 +32,7 @@ from .cache import CacheConfig
 from .compilation import CompilationConfig, CompilationMode, CUDAGraphMode
 from .device import DeviceConfig
 from .ec_transfer import ECTransferConfig
+from .fault_injection import FaultInjectionConfig
 from .kv_events import KVEventsConfig
 from .kv_transfer import KVTransferConfig
 from .load import LoadConfig
@@ -227,6 +228,12 @@ class VllmConfig:
     """The configurations for event publishing."""
     ec_transfer_config: ECTransferConfig | None = None
     """The configurations for distributed EC cache transfer."""
+    fault_injection_config: FaultInjectionConfig = Field(
+        default_factory=FaultInjectionConfig
+    )
+    """Configuration for KV cache fault injection testing. Requires
+    VLLM_FAULT_INJECT compile flag. WARNING: KV_READ injection only works
+    with legacy PagedAttention backend (set VLLM_ATTENTION_BACKEND=XFORMERS)."""
     # some opaque config, only used to provide additional information
     # for the hash computation, mainly used for testing, debugging or out of
     # tree config registration.
@@ -316,6 +323,10 @@ class VllmConfig:
             vllm_factors.append("None")
         if self.ec_transfer_config:
             vllm_factors.append(self.ec_transfer_config.compute_hash())
+        else:
+            vllm_factors.append("None")
+        if self.fault_injection_config:
+            vllm_factors.append(self.fault_injection_config.compute_hash())
         else:
             vllm_factors.append("None")
         if self.additional_config:

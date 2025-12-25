@@ -22,6 +22,11 @@ set(VLLM_TARGET_DEVICE "cuda" CACHE STRING "Target device backend for vLLM")
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "Target device: ${VLLM_TARGET_DEVICE}")
 
+# Fault injection for KV cache testing (optional, disabled by default)
+# Enable with -DVLLM_FAULT_INJECT=ON
+set(VLLM_FAULT_INJECT OFF CACHE BOOL "Enable fault injection for KV cache testing")
+message(STATUS "Fault injection: ${VLLM_FAULT_INJECT}")
+
 include(${CMAKE_CURRENT_LIST_DIR}/cmake/utils.cmake)
 
 # Suppress potential warnings about unused manually-specified variables
@@ -939,6 +944,13 @@ define_extension_target(
 # driver API. This causes problems when linking with earlier versions of CUDA.
 # Setting this variable sidesteps the issue by calling the driver directly.
 target_compile_definitions(_C PRIVATE CUTLASS_ENABLE_DIRECT_CUDA_DRIVER_CALL=1)
+
+# Enable fault injection compile flag if requested
+if(VLLM_FAULT_INJECT)
+  target_compile_definitions(_C PRIVATE VLLM_FAULT_INJECT)
+  target_sources(_C PRIVATE "csrc/fault_injection/fault_injection.cu")
+  message(STATUS "Fault injection enabled - adding VLLM_FAULT_INJECT compile definition")
+endif()
 
 #
 # _moe_C extension

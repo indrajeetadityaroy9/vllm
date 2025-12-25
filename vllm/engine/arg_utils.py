@@ -41,6 +41,7 @@ from vllm.config import (
     DeviceConfig,
     ECTransferConfig,
     EPLBConfig,
+    FaultInjectionConfig,
     KVEventsConfig,
     KVTransferConfig,
     LoadConfig,
@@ -74,6 +75,12 @@ from vllm.config.model import (
     TokenizerMode,
 )
 from vllm.config.multimodal import MMCacheType, MMEncoderTPMode
+from vllm.config.fault_injection import (
+    FaultInjectionModel,
+    FaultInjectionSite,
+    FaultInjectionSubsite,
+    MSBPolicy,
+)
 from vllm.config.observability import DetailedTraceModules
 from vllm.config.parallel import DistributedExecutorBackend, ExpertPlacementStrategy
 from vllm.config.scheduler import SchedulerPolicy
@@ -537,6 +544,19 @@ class EngineArgs:
     kv_events_config: KVEventsConfig | None = None
 
     ec_transfer_config: ECTransferConfig | None = None
+
+    # Fault injection fields (for testing ECC and compute sensitivity)
+    fault_injection_enabled: bool = FaultInjectionConfig.enabled
+    fault_injection_site: FaultInjectionSite = FaultInjectionConfig.site
+    fault_injection_subsite: FaultInjectionSubsite = FaultInjectionConfig.subsite
+    fault_injection_model: FaultInjectionModel = FaultInjectionConfig.model
+    fault_injection_rate: float = FaultInjectionConfig.rate
+    fault_injection_flip_count: int = FaultInjectionConfig.flip_count
+    fault_injection_burst_len: int = FaultInjectionConfig.burst_len
+    fault_injection_msb_policy: MSBPolicy = FaultInjectionConfig.msb_policy
+    fault_injection_msb_mask: int = FaultInjectionConfig.msb_mask
+    fault_injection_page_scope: int = FaultInjectionConfig.page_scope
+    fault_injection_seed: int = FaultInjectionConfig.seed
 
     generation_config: str = ModelConfig.generation_config
     enable_sleep_mode: bool = ModelConfig.enable_sleep_mode
@@ -1157,6 +1177,46 @@ class EngineArgs:
             "--optimization-level", **vllm_kwargs["optimization_level"]
         )
 
+        # Fault injection arguments (for ECC and compute sensitivity testing)
+        fault_kwargs = get_kwargs(FaultInjectionConfig)
+        fault_group = parser.add_argument_group(
+            title="FaultInjectionConfig",
+            description=FaultInjectionConfig.__doc__,
+        )
+        fault_group.add_argument(
+            "--fault-injection-enabled", **fault_kwargs["enabled"]
+        )
+        fault_group.add_argument(
+            "--fault-injection-site", **fault_kwargs["site"]
+        )
+        fault_group.add_argument(
+            "--fault-injection-subsite", **fault_kwargs["subsite"]
+        )
+        fault_group.add_argument(
+            "--fault-injection-model", **fault_kwargs["model"]
+        )
+        fault_group.add_argument(
+            "--fault-injection-rate", **fault_kwargs["rate"]
+        )
+        fault_group.add_argument(
+            "--fault-injection-flip-count", **fault_kwargs["flip_count"]
+        )
+        fault_group.add_argument(
+            "--fault-injection-burst-len", **fault_kwargs["burst_len"]
+        )
+        fault_group.add_argument(
+            "--fault-injection-msb-policy", **fault_kwargs["msb_policy"]
+        )
+        fault_group.add_argument(
+            "--fault-injection-msb-mask", **fault_kwargs["msb_mask"]
+        )
+        fault_group.add_argument(
+            "--fault-injection-page-scope", **fault_kwargs["page_scope"]
+        )
+        fault_group.add_argument(
+            "--fault-injection-seed", **fault_kwargs["seed"]
+        )
+
         # Other arguments
         parser.add_argument(
             "--disable-log-stats",
@@ -1695,6 +1755,20 @@ class EngineArgs:
             enable_mfu_metrics=self.enable_mfu_metrics,
         )
 
+        fault_injection_config = FaultInjectionConfig(
+            enabled=self.fault_injection_enabled,
+            site=self.fault_injection_site,
+            subsite=self.fault_injection_subsite,
+            model=self.fault_injection_model,
+            rate=self.fault_injection_rate,
+            flip_count=self.fault_injection_flip_count,
+            burst_len=self.fault_injection_burst_len,
+            msb_policy=self.fault_injection_msb_policy,
+            msb_mask=self.fault_injection_msb_mask,
+            page_scope=self.fault_injection_page_scope,
+            seed=self.fault_injection_seed,
+        )
+
         # Compilation config overrides
         compilation_config = copy.deepcopy(self.compilation_config)
         if self.cudagraph_capture_sizes is not None:
@@ -1725,6 +1799,7 @@ class EngineArgs:
             speculative_config=speculative_config,
             structured_outputs_config=self.structured_outputs_config,
             observability_config=observability_config,
+            fault_injection_config=fault_injection_config,
             compilation_config=compilation_config,
             kv_transfer_config=self.kv_transfer_config,
             kv_events_config=self.kv_events_config,

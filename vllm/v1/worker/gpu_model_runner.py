@@ -2970,6 +2970,24 @@ class GPUModelRunner(
                 "after execute_model() returns None."
             )
 
+        # Update fault injection config in CUDA constant memory
+        fault_config = self.vllm_config.fault_injection_config
+        if fault_config is not None and fault_config.enabled:
+            from vllm._custom_ops import set_fault_injection_config
+            set_fault_injection_config(
+                enabled=fault_config.enabled,
+                site=fault_config.site,
+                subsite=fault_config.subsite,
+                model=fault_config.model,
+                rate=fault_config.rate,
+                flip_count=fault_config.flip_count,
+                burst_len=fault_config.burst_len,
+                msb_policy=fault_config.msb_policy,
+                msb_mask=fault_config.msb_mask,
+                page_scope=fault_config.page_scope,
+                seed=fault_config.seed,
+            )
+
         # self._draft_token_ids is None when `input_fits_in_drafter=False`
         # and there is no draft tokens scheduled. so it need to update the
         # spec_decoding info in scheduler_output with async_scheduling.

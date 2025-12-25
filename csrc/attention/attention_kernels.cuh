@@ -34,6 +34,10 @@ typedef __hip_bfloat16 __nv_bfloat16;
   #include "../quantization/w8a8/fp8/nvidia/quant_utils.cuh"
 #endif
 
+#ifdef VLLM_FAULT_INJECT
+#include "../fault_injection/fault_injector.cuh"
+#endif
+
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define DIVIDE_ROUND_UP(a, b) (((a) + (b) - 1) / (b))
@@ -275,12 +279,37 @@ __device__ void paged_attention_kernel(
         if constexpr (KV_DTYPE == Fp8KVCacheDataType::kAuto) {
           k_vecs[j] = *reinterpret_cast<const K_vec*>(
               k_ptr + offset1 * BLOCK_SIZE * x + offset2);
+#ifdef VLLM_FAULT_INJECT
+          // VALUE injection for non-FP8 (no separate CODEWORD representation)
+          using namespace vllm::fault_injection;
+          if (c_fault_spec.enabled && c_fault_spec.site != SITE_KV_WRITE) {
+            k_vecs[j] = inject_fault_vec_register<K_vec, scalar_t>(
+                k_vecs[j], physical_block_number, 0);
+          }
+#endif
         } else {
           // Vector conversion from Quant_vec to K_vec.
           Quant_vec k_vec_quant = *reinterpret_cast<const Quant_vec*>(
               k_ptr + offset1 * BLOCK_SIZE * x + offset2);
+#ifdef VLLM_FAULT_INJECT
+          // CODEWORD injection: before dequantization (ECC-relevant)
+          using namespace vllm::fault_injection;
+          if (c_fault_spec.enabled && c_fault_spec.site != SITE_KV_WRITE &&
+              c_fault_spec.subsite == SUBSITE_CODEWORD) {
+            k_vec_quant = inject_fault_vec_register<Quant_vec, cache_t>(
+                k_vec_quant, physical_block_number, 0);
+          }
+#endif
           k_vecs[j] = fp8::scaled_convert<K_vec, Quant_vec, KV_DTYPE>(
               k_vec_quant, *k_scale);
+#ifdef VLLM_FAULT_INJECT
+          // VALUE injection: after dequantization (compute sensitivity)
+          if (c_fault_spec.enabled && c_fault_spec.site != SITE_KV_WRITE &&
+              c_fault_spec.subsite == SUBSITE_VALUE) {
+            k_vecs[j] = inject_fault_vec_register<K_vec, scalar_t>(
+                k_vecs[j], physical_block_number, 0);
+          }
+#endif
         }
       }
 
@@ -405,12 +434,37 @@ __device__ void paged_attention_kernel(
 
         if constexpr (KV_DTYPE == Fp8KVCacheDataType::kAuto) {
           v_vec = *reinterpret_cast<const V_vec*>(v_ptr + offset);
+#ifdef VLLM_FAULT_INJECT
+          // VALUE injection for non-FP8 (no separate CODEWORD representation)
+          using namespace vllm::fault_injection;
+          if (c_fault_spec.enabled && c_fault_spec.site != SITE_KV_WRITE) {
+            v_vec = inject_fault_vec_register<V_vec, scalar_t>(
+                v_vec, physical_block_number, 0);
+          }
+#endif
         } else {
           V_quant_vec v_quant_vec =
               *reinterpret_cast<const V_quant_vec*>(v_ptr + offset);
+#ifdef VLLM_FAULT_INJECT
+          // CODEWORD injection: before dequantization (ECC-relevant)
+          using namespace vllm::fault_injection;
+          if (c_fault_spec.enabled && c_fault_spec.site != SITE_KV_WRITE &&
+              c_fault_spec.subsite == SUBSITE_CODEWORD) {
+            v_quant_vec = inject_fault_vec_register<V_quant_vec, cache_t>(
+                v_quant_vec, physical_block_number, 0);
+          }
+#endif
           // Vector conversion from V_quant_vec to V_vec.
           v_vec = fp8::scaled_convert<V_vec, V_quant_vec, KV_DTYPE>(v_quant_vec,
                                                                     *v_scale);
+#ifdef VLLM_FAULT_INJECT
+          // VALUE injection: after dequantization (compute sensitivity)
+          if (c_fault_spec.enabled && c_fault_spec.site != SITE_KV_WRITE &&
+              c_fault_spec.subsite == SUBSITE_VALUE) {
+            v_vec = inject_fault_vec_register<V_vec, scalar_t>(
+                v_vec, physical_block_number, 0);
+          }
+#endif
         }
         if (block_idx == num_seq_blocks - 1) {
           // NOTE(woosuk): When v_vec contains the tokens that are out of the

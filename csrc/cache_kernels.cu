@@ -9,6 +9,27 @@
 #include "dispatch_utils.h"
 #include "quantization/vectorization_utils.cuh"
 
+#ifdef VLLM_FAULT_INJECT
+#include "fault_injection/fault_injector.cuh"
+
+// The constant memory symbol c_fault_spec is defined in the header.
+// We define set_cache_fault_spec HERE to update THIS file's c_fault_spec.
+// This ensures cudaMemcpyToSymbol updates the symbol used by the kernels below.
+namespace vllm {
+namespace fault_injection {
+
+// Host function to update constant memory - callable from torch bindings
+void set_cache_fault_spec(const FaultSpec& spec) {
+  cudaError_t err = cudaMemcpyToSymbol(c_fault_spec, &spec, sizeof(FaultSpec));
+  if (err != cudaSuccess) {
+    // Log error but don't throw - fault injection is optional
+  }
+}
+
+}  // namespace fault_injection
+}  // namespace vllm
+#endif
+
 #ifdef USE_ROCM
   #include "quantization/w8a8/fp8/amd/quant_utils.cuh"
 #else
@@ -187,11 +208,32 @@ __global__ void reshape_and_cache_kernel(
 
   vectorize_with_alignment<VEC_SIZE>(key_src, key_dst, x, 0, 1, k_op);
 
+#ifdef VLLM_FAULT_INJECT
+  // Fault injection for key cache (after vectorized write)
+  // Note: layer_idx=0 since this kernel doesn't have layer information
+  using namespace vllm::fault_injection;
+  if (c_fault_spec.enabled && c_fault_spec.site != SITE_KV_READ) {
+    for (int i = 0; i < x; i++) {
+      cache_t val = key_dst[i];
+      val = inject_fault_register<cache_t>(val, static_cast<int>(block_idx), 0);
+      key_dst[i] = val;
+    }
+  }
+#endif
+
   const scalar_t* __restrict__ value_src = value + src_value_start;
   cache_t* __restrict__ value_dst = value_cache + tgt_value_start;
 #pragma unroll
   for (int i = 0; i < x; i++) {
     v_op(value_dst[i * block_size], value_src[i]);
+#ifdef VLLM_FAULT_INJECT
+    // Fault injection for value cache
+    if (c_fault_spec.enabled && c_fault_spec.site != SITE_KV_READ) {
+      cache_t val = value_dst[i * block_size];
+      val = inject_fault_register<cache_t>(val, static_cast<int>(block_idx), 0);
+      value_dst[i * block_size] = val;
+    }
+#endif
   }
 }
 
@@ -243,6 +285,22 @@ __global__ void reshape_and_cache_flash_kernel(
     vectorize_with_alignment<VEC_SIZE>(value_src, value_dst, n_elems,
                                        threadIdx.x, blockDim.x, v_op);
 
+#ifdef VLLM_FAULT_INJECT
+    // Fault injection for NHD layout (after vectorized writes)
+    using namespace vllm::fault_injection;
+    if (c_fault_spec.enabled && c_fault_spec.site != SITE_KV_READ) {
+      for (int i = threadIdx.x; i < n_elems; i += blockDim.x) {
+        cache_t k_val = key_dst[i];
+        k_val = inject_fault_register<cache_t>(k_val, static_cast<int>(block_idx), 0);
+        key_dst[i] = k_val;
+
+        cache_t v_val = value_dst[i];
+        v_val = inject_fault_register<cache_t>(v_val, static_cast<int>(block_idx), 0);
+        value_dst[i] = v_val;
+      }
+    }
+#endif
+
   } else {
     // HND layout: heads are strided, but each head_size segment is contiguous
     // kv cache: [num_blocks, num_heads, block_size, head_size]
@@ -266,6 +324,22 @@ __global__ void reshape_and_cache_flash_kernel(
 
       vectorize_with_alignment<VEC_SIZE>(v_src_h, v_dst_h, head_size, lane, 32,
                                          v_op);
+
+#ifdef VLLM_FAULT_INJECT
+      // Fault injection for HND layout (after vectorized writes)
+      using namespace vllm::fault_injection;
+      if (c_fault_spec.enabled && c_fault_spec.site != SITE_KV_READ) {
+        for (int i = lane; i < head_size; i += 32) {
+          cache_t k_val = k_dst_h[i];
+          k_val = inject_fault_register<cache_t>(k_val, static_cast<int>(block_idx), 0);
+          k_dst_h[i] = k_val;
+
+          cache_t v_val = v_dst_h[i];
+          v_val = inject_fault_register<cache_t>(v_val, static_cast<int>(block_idx), 0);
+          v_dst_h[i] = v_val;
+        }
+      }
+#endif
     }
   }
 }
@@ -307,6 +381,15 @@ __global__ void concat_and_cache_mla_kernel(
         dst[dst_idx] =
             fp8::scaled_convert<cache_t, scalar_t, kv_dt>(src[src_idx], *scale);
       }
+#ifdef VLLM_FAULT_INJECT
+      // Fault injection for MLA cache
+      using namespace vllm::fault_injection;
+      if (c_fault_spec.enabled && c_fault_spec.site != SITE_KV_READ) {
+        cache_t val = dst[dst_idx];
+        val = inject_fault_register<cache_t>(val, static_cast<int>(block_idx), 0);
+        dst[dst_idx] = val;
+      }
+#endif
     }
   };
 
