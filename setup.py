@@ -302,15 +302,19 @@ class cmake_build_ext(build_ext):
             # copy vllm/third_party/triton_kernels/**/*.py from self.build_lib
             # to current directory so that they can be included in the editable
             # build
-            print(
-                f"Copying {self.build_lib}/vllm/third_party/triton_kernels "
-                "to vllm/third_party/triton_kernels"
-            )
-            shutil.copytree(
-                f"{self.build_lib}/vllm/third_party/triton_kernels",
-                "vllm/third_party/triton_kernels",
-                dirs_exist_ok=True,
-            )
+            triton_kernels_src = f"{self.build_lib}/vllm/third_party/triton_kernels"
+            if os.path.exists(triton_kernels_src):
+                print(
+                    f"Copying {triton_kernels_src} "
+                    "to vllm/third_party/triton_kernels"
+                )
+                shutil.copytree(
+                    triton_kernels_src,
+                    "vllm/third_party/triton_kernels",
+                    dirs_exist_ok=True,
+                )
+            else:
+                print(f"Skipping triton_kernels copy: {triton_kernels_src} not found")
 
 
 class precompiled_build_ext(build_ext):
@@ -832,28 +836,30 @@ def get_requirements() -> list[str]:
 ext_modules = []
 
 if _is_cuda() or _is_hip():
-    ext_modules.append(CMakeExtension(name="vllm._moe_C"))
+    # MINIMAL BUILD: Disabled MoE for ECC testing
+    # ext_modules.append(CMakeExtension(name="vllm._moe_C"))
     ext_modules.append(CMakeExtension(name="vllm.cumem_allocator"))
     # Optional since this doesn't get built (produce an .so file). This is just
     # copying the relevant .py files from the source repository.
-    ext_modules.append(CMakeExtension(name="vllm.triton_kernels", optional=True))
+    # Disabled: triton_kernels is Python-only, handled by cmake install, not CMakeExtension
+    # ext_modules.append(CMakeExtension(name="vllm.triton_kernels", optional=True))
 
 if _is_hip():
     ext_modules.append(CMakeExtension(name="vllm._rocm_C"))
 
 if _is_cuda():
-    ext_modules.append(CMakeExtension(name="vllm.vllm_flash_attn._vllm_fa2_C"))
+    # MINIMAL BUILD: Disabled FA2 for ECC testing (using FA3 only for H100)
+    # ext_modules.append(CMakeExtension(name="vllm.vllm_flash_attn._vllm_fa2_C"))
     if envs.VLLM_USE_PRECOMPILED or (
         CUDA_HOME and get_nvcc_cuda_version() >= Version("12.3")
     ):
         # FA3 requires CUDA 12.3 or later
         ext_modules.append(CMakeExtension(name="vllm.vllm_flash_attn._vllm_fa3_C"))
-        # Optional since this doesn't get built (produce an .so file) when
-        # not targeting a hopper system
-        ext_modules.append(CMakeExtension(name="vllm._flashmla_C", optional=True))
-        ext_modules.append(
-            CMakeExtension(name="vllm._flashmla_extension_C", optional=True)
-        )
+        # MINIMAL BUILD: Disabled FlashMLA for ECC testing
+        # ext_modules.append(CMakeExtension(name="vllm._flashmla_C", optional=True))
+        # ext_modules.append(
+        #     CMakeExtension(name="vllm._flashmla_extension_C", optional=True)
+        # )
 
 if _build_custom_ops():
     ext_modules.append(CMakeExtension(name="vllm._C"))

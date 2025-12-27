@@ -11,6 +11,7 @@ from vllm.config.compilation import (
 )
 from vllm.config.device import DeviceConfig
 from vllm.config.ec_transfer import ECTransferConfig
+from vllm.config.ecc import ECCConfig
 from vllm.config.fault_injection import FaultInjectionConfig
 from vllm.config.kv_events import KVEventsConfig
 from vllm.config.kv_transfer import KVTransferConfig
@@ -63,6 +64,8 @@ __all__ = [
     "DeviceConfig",
     # From vllm.config.ec_transfer
     "ECTransferConfig",
+    # From vllm.config.ecc
+    "ECCConfig",
     # From vllm.config.fault_injection
     "FaultInjectionConfig",
     # From vllm.config.kv_events

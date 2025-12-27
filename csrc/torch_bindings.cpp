@@ -10,6 +10,32 @@
 #include "fault_injection/fault_injector.cuh"
 #endif
 
+#ifdef VLLM_ECC_ENABLED
+// Forward declarations for ECC operations
+// Algorithm: 0 = Hamming(7,4), 1 = SECDED(8,4)
+void ecc_encode(
+    torch::Tensor& key,
+    torch::Tensor& value,
+    torch::Tensor& key_cache,
+    torch::Tensor& value_cache,
+    torch::Tensor& slot_mapping,
+    int64_t algorithm);
+
+void ecc_gather_decode(
+    torch::Tensor& key_cache,
+    torch::Tensor& value_cache,
+    torch::Tensor& slot_mapping,
+    torch::Tensor& seq_start_locs,
+    torch::Tensor& workspace_k,
+    torch::Tensor& workspace_v,
+    int64_t num_tokens,
+    int64_t num_heads,
+    int64_t head_size,
+    int64_t block_size,
+    int64_t num_seqs,
+    int64_t algorithm);
+#endif
+
 // Note on op signatures:
 // The X_meta signatures are for the meta functions corresponding to op X.
 // They must be kept in sync with the signature for X. Generally, only
@@ -816,6 +842,28 @@ TORCH_LIBRARY_EXPAND(CONCAT(TORCH_EXTENSION_NAME, _cache_ops), cache_ops) {
       "dst_scale, Tensor block_table, Tensor cu_seq_lens) -> ()");
   cache_ops.impl("cp_gather_indexer_k_quant_cache", torch::kCUDA,
                  &cp_gather_indexer_k_quant_cache);
+
+#ifdef VLLM_ECC_ENABLED
+  // ECC (Error Correction Code) operations for KV cache protection
+  // Supports: algorithm=0 (Hamming 7,4), algorithm=1 (SECDED 8,4)
+  // Encode key/value to ECC-protected format
+  cache_ops.def(
+      "ecc_encode(Tensor key, Tensor value, "
+      "           Tensor! key_cache, Tensor! value_cache, "
+      "           Tensor slot_mapping, int algorithm) -> ()");
+  cache_ops.impl("ecc_encode", torch::kCUDA, &ecc_encode);
+
+  // Gather and decode ECC-protected cache to workspace
+  // SECDED mode uses seq_start_locs for N-LERP boundary safety
+  cache_ops.def(
+      "ecc_gather_decode(Tensor key_cache, Tensor value_cache, "
+      "                  Tensor slot_mapping, Tensor seq_start_locs, "
+      "                  Tensor! workspace_k, Tensor! workspace_v, "
+      "                  int num_tokens, int num_heads, "
+      "                  int head_size, int block_size, "
+      "                  int num_seqs, int algorithm) -> ()");
+  cache_ops.impl("ecc_gather_decode", torch::kCUDA, &ecc_gather_decode);
+#endif
 }
 
 TORCH_LIBRARY_EXPAND(CONCAT(TORCH_EXTENSION_NAME, _cuda_utils), cuda_utils) {

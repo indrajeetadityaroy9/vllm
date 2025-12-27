@@ -27,6 +27,11 @@ message(STATUS "Target device: ${VLLM_TARGET_DEVICE}")
 set(VLLM_FAULT_INJECT OFF CACHE BOOL "Enable fault injection for KV cache testing")
 message(STATUS "Fault injection: ${VLLM_FAULT_INJECT}")
 
+# ECC (Error Correction Code) for KV cache protection (optional, disabled by default)
+# Enable with -DVLLM_ECC_ENABLED=ON
+set(VLLM_ECC_ENABLED OFF CACHE BOOL "Enable ECC for KV cache protection")
+message(STATUS "ECC protection: ${VLLM_ECC_ENABLED}")
+
 include(${CMAKE_CURRENT_LIST_DIR}/cmake/utils.cmake)
 
 # Suppress potential warnings about unused manually-specified variables
@@ -950,6 +955,13 @@ if(VLLM_FAULT_INJECT)
   target_compile_definitions(_C PRIVATE VLLM_FAULT_INJECT)
   target_sources(_C PRIVATE "csrc/fault_injection/fault_injection.cu")
   message(STATUS "Fault injection enabled - adding VLLM_FAULT_INJECT compile definition")
+endif()
+
+# Enable ECC (Error Correction Code) compile flag if requested
+if(VLLM_ECC_ENABLED)
+  target_compile_definitions(_C PRIVATE VLLM_ECC_ENABLED)
+  target_sources(_C PRIVATE "csrc/ecc/ecc_kernels.cu")
+  message(STATUS "ECC protection enabled - adding VLLM_ECC_ENABLED compile definition")
 endif()
 
 #
