@@ -94,38 +94,15 @@ void paged_attention_v2_launcher(
   const at::cuda::OptionalCUDAGuard device_guard(device_of(query));
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
   switch (head_size) {
-    // NOTE(woosuk): To reduce the compilation time, we only compile for the
-    // head sizes that we use in the model. However, we can easily extend this
-    // to support any head size which is a multiple of 16.
-    case 32:
-      LAUNCH_PAGED_ATTENTION_V2(32);
-      break;
+    // MINIMAL BUILD: HEAD_SIZE=64 (GPT-2) and 128 (LLaMA-3.1-8B)
     case 64:
       LAUNCH_PAGED_ATTENTION_V2(64);
-      break;
-    case 80:
-      LAUNCH_PAGED_ATTENTION_V2(80);
-      break;
-    case 96:
-      LAUNCH_PAGED_ATTENTION_V2(96);
-      break;
-    case 112:
-      LAUNCH_PAGED_ATTENTION_V2(112);
-      break;
-    case 120:
-      LAUNCH_PAGED_ATTENTION_V2(120);
       break;
     case 128:
       LAUNCH_PAGED_ATTENTION_V2(128);
       break;
-    case 192:
-      LAUNCH_PAGED_ATTENTION_V2(192);
-      break;
-    case 256:
-      LAUNCH_PAGED_ATTENTION_V2(256);
-      break;
     default:
-      TORCH_CHECK(false, "Unsupported head size: ", head_size);
+      TORCH_CHECK(false, "Minimal build only supports head_size=64,128, got: ", head_size);
       break;
   }
 }
@@ -139,28 +116,22 @@ void paged_attention_v2_launcher(
       blocksparse_vert_stride, blocksparse_block_size,                        \
       blocksparse_head_sliding_step);
 
+// MINIMAL BUILD: Only non-sparse for fault injection testing
 #define CALL_V2_LAUNCHER_SPARSITY(T, CACHE_T, BLOCK_SIZE, IS_FP8_KV_CACHE) \
   if (is_block_sparse) {                                                   \
-    CALL_V2_LAUNCHER(T, CACHE_T, BLOCK_SIZE, IS_FP8_KV_CACHE, true);       \
+    TORCH_CHECK(false, "Minimal build does not support block sparse");     \
   } else {                                                                 \
     CALL_V2_LAUNCHER(T, CACHE_T, BLOCK_SIZE, IS_FP8_KV_CACHE, false);      \
   }
 
-// NOTE(woosuk): To reduce the compilation time, we omitted block sizes
-// 1, 2, 4, 64, 128, 256.
+// MINIMAL BUILD: Only block_size=16 for fault injection testing
 #define CALL_V2_LAUNCHER_BLOCK_SIZE(T, CACHE_T, KV_DTYPE)         \
   switch (block_size) {                                           \
-    case 8:                                                       \
-      CALL_V2_LAUNCHER_SPARSITY(T, CACHE_T, 8, KV_DTYPE);         \
-      break;                                                      \
     case 16:                                                      \
       CALL_V2_LAUNCHER_SPARSITY(T, CACHE_T, 16, KV_DTYPE);        \
       break;                                                      \
-    case 32:                                                      \
-      CALL_V2_LAUNCHER_SPARSITY(T, CACHE_T, 32, KV_DTYPE);        \
-      break;                                                      \
     default:                                                      \
-      TORCH_CHECK(false, "Unsupported block size: ", block_size); \
+      TORCH_CHECK(false, "Minimal build only supports block_size=16, got: ", block_size); \
       break;                                                      \
   }
 

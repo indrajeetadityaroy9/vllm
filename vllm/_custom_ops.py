@@ -3091,6 +3091,13 @@ if hasattr(torch.ops._C, "hadacore_transform"):
 
 
 # Fault injection ops (requires VLLM_FAULT_INJECT compile flag)
+# Module-level constants for string-to-int mapping (avoid dict creation per call)
+_FAULT_SITE_MAP = {"KV_WRITE": 0, "KV_READ": 1, "BOTH": 2}
+_FAULT_SUBSITE_MAP = {"CODEWORD": 0, "VALUE": 1}
+_FAULT_MODEL_MAP = {"random": 0, "burst": 1, "msb_biased": 2, "page_local": 3}
+_FAULT_MSB_POLICY_MAP = {"BYTE_TOPBITS": 0, "FP16_EXPONENT": 1, "INT4_NIBBLE": 2}
+
+
 def set_fault_injection_config(
     enabled: bool,
     site: str,
@@ -3131,43 +3138,37 @@ def set_fault_injection_config(
         )
         return
 
-    # Convert string enums to integer codes
-    site_map = {"KV_WRITE": 0, "KV_READ": 1, "BOTH": 2}
-    subsite_map = {"CODEWORD": 0, "VALUE": 1}
-    model_map = {"random": 0, "burst": 1, "msb_biased": 2, "page_local": 3}
-    msb_policy_map = {"BYTE_TOPBITS": 0, "FP16_EXPONENT": 1, "INT4_NIBBLE": 2}
-
     # Validate enum values - raise on invalid input instead of silent fallback
-    if site not in site_map:
+    if site not in _FAULT_SITE_MAP:
         raise ValueError(
             f"Invalid fault injection site: {site!r}. "
-            f"Must be one of: {list(site_map.keys())}"
+            f"Must be one of: {list(_FAULT_SITE_MAP.keys())}"
         )
-    if subsite not in subsite_map:
+    if subsite not in _FAULT_SUBSITE_MAP:
         raise ValueError(
             f"Invalid fault injection subsite: {subsite!r}. "
-            f"Must be one of: {list(subsite_map.keys())}"
+            f"Must be one of: {list(_FAULT_SUBSITE_MAP.keys())}"
         )
-    if model not in model_map:
+    if model not in _FAULT_MODEL_MAP:
         raise ValueError(
             f"Invalid fault injection model: {model!r}. "
-            f"Must be one of: {list(model_map.keys())}"
+            f"Must be one of: {list(_FAULT_MODEL_MAP.keys())}"
         )
-    if msb_policy not in msb_policy_map:
+    if msb_policy not in _FAULT_MSB_POLICY_MAP:
         raise ValueError(
             f"Invalid fault injection msb_policy: {msb_policy!r}. "
-            f"Must be one of: {list(msb_policy_map.keys())}"
+            f"Must be one of: {list(_FAULT_MSB_POLICY_MAP.keys())}"
         )
 
     torch.ops._C.set_fault_injection_config(
         enabled,
-        site_map[site],
-        subsite_map[subsite],
-        model_map[model],
+        _FAULT_SITE_MAP[site],
+        _FAULT_SUBSITE_MAP[subsite],
+        _FAULT_MODEL_MAP[model],
         rate,
         flip_count,
         burst_len,
-        msb_policy_map[msb_policy],
+        _FAULT_MSB_POLICY_MAP[msb_policy],
         msb_mask,
         page_scope,
         seed,
