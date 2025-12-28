@@ -28,6 +28,9 @@ CacheDType = Literal[
     "fp8_e5m2",
     "fp8_inc",
     "fp8_ds_mla",
+    "int4_ecc",      # SECDED(8,4) - single-bit correction, double-bit detection
+    "int4_hamming",  # Hamming(7,4) - single-bit correction only
+    "int4_ecc_lsq",  # LSQ + SECDED(16,11) with Hadamard rotation
 ]
 MambaDType = Literal["auto", "float32", "float16"]
 PrefixCachingHashAlgo = Literal["sha256", "sha256_cbor", "xxhash", "xxhash_cbor"]

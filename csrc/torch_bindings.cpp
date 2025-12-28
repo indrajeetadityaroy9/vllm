@@ -34,6 +34,38 @@ void ecc_gather_decode(
     int64_t block_size,
     int64_t num_seqs,
     int64_t algorithm);
+
+// Forward declarations for LSQ (Lattice Syndrome Quantization) operations
+// LSQ uses SECDED(16,11) with paired adjacent dimensions
+void lsq_ecc_encode(
+    torch::Tensor& key,
+    torch::Tensor& value,
+    torch::Tensor& key_cache,
+    torch::Tensor& value_cache,
+    torch::Tensor& slot_mapping);
+
+void lsq_ecc_gather_decode(
+    torch::Tensor& key_cache,
+    torch::Tensor& value_cache,
+    torch::Tensor& slot_mapping,
+    torch::Tensor& seq_start_locs,
+    torch::Tensor& workspace_k,
+    torch::Tensor& workspace_v,
+    int64_t num_tokens,
+    int64_t num_heads,
+    int64_t head_size,
+    int64_t block_size,
+    int64_t num_seqs);
+
+void paged_attention_lsq_v1(
+    torch::Tensor& out,
+    torch::Tensor& query,
+    torch::Tensor& key_cache,
+    torch::Tensor& value_cache,
+    torch::Tensor& block_tables,
+    torch::Tensor& context_lens,
+    float scale,
+    int block_size);
 #endif
 
 // Note on op signatures:
@@ -65,6 +97,8 @@ TORCH_LIBRARY_EXPAND(TORCH_EXTENSION_NAME, ops) {
            &get_cuda_view_from_cpu_tensor);
 
   // Attention ops
+  // DISABLED FOR ECC-ONLY BUILD: PagedAttention not needed (using FlashAttention v3)
+#if 0
   // Compute the attention between an input query and the cached
   // keys/values using PagedAttention.
   ops.def(
@@ -92,6 +126,7 @@ TORCH_LIBRARY_EXPAND(TORCH_EXTENSION_NAME, ops) {
       "    int blocksparse_vert_stride, int blocksparse_block_size,"
       "    int blocksparse_head_sliding_step) -> ()");
   ops.impl("paged_attention_v2", torch::kCUDA, &paged_attention_v2);
+#endif
 
   // Merge attn states
   // Implements section 2.2 of https://www.arxiv.org/pdf/2501.01005
@@ -863,6 +898,31 @@ TORCH_LIBRARY_EXPAND(CONCAT(TORCH_EXTENSION_NAME, _cache_ops), cache_ops) {
       "                  int head_size, int block_size, "
       "                  int num_seqs, int algorithm) -> ()");
   cache_ops.impl("ecc_gather_decode", torch::kCUDA, &ecc_gather_decode);
+
+  // LSQ (Lattice Syndrome Quantization) operations
+  // Uses SECDED(16,11) with paired adjacent dimensions
+  // Keys should be Hadamard-rotated before encoding
+  cache_ops.def(
+      "lsq_ecc_encode(Tensor key, Tensor value, "
+      "               Tensor! key_cache, Tensor! value_cache, "
+      "               Tensor slot_mapping) -> ()");
+  cache_ops.impl("lsq_ecc_encode", torch::kCUDA, &lsq_ecc_encode);
+
+  cache_ops.def(
+      "lsq_ecc_gather_decode(Tensor key_cache, Tensor value_cache, "
+      "                      Tensor slot_mapping, Tensor seq_start_locs, "
+      "                      Tensor! workspace_k, Tensor! workspace_v, "
+      "                      int num_tokens, int num_heads, "
+      "                      int head_size, int block_size, "
+      "                      int num_seqs) -> ()");
+  cache_ops.impl("lsq_ecc_gather_decode", torch::kCUDA, &lsq_ecc_gather_decode);
+
+  cache_ops.def(
+      "paged_attention_lsq_v1(Tensor! out, Tensor query, "
+      "                       Tensor key_cache, Tensor value_cache, "
+      "                       Tensor block_tables, Tensor context_lens, "
+      "                       float scale, int block_size) -> ()");
+  cache_ops.impl("paged_attention_lsq_v1", torch::kCUDA, &paged_attention_lsq_v1);
 #endif
 }
 

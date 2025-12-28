@@ -29,6 +29,8 @@ torch::Tensor weak_ref_tensor(torch::Tensor& tensor) {
   return new_tensor;
 }
 
+// DISABLED FOR ECC-ONLY BUILD: PagedAttention not needed (using FlashAttention v3)
+#if 0
 void paged_attention_v1(
     torch::Tensor& out, torch::Tensor& query, torch::Tensor& key_cache,
     torch::Tensor& value_cache, int64_t num_kv_heads, double scale,
@@ -51,6 +53,7 @@ void paged_attention_v2(
     const int64_t blocksparse_local_blocks,
     const int64_t blocksparse_vert_stride, const int64_t blocksparse_block_size,
     const int64_t blocksparse_head_sliding_step);
+#endif
 
 void merge_attn_states(torch::Tensor& output,
                        std::optional<torch::Tensor> output_lse,

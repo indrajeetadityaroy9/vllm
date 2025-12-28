@@ -41,6 +41,10 @@ STR_DTYPE_TO_TORCH_DTYPE = {
     "int8": torch.int8,
     "fp8_inc": torch.float8_e4m3fn,
     "fp8_ds_mla": torch.uint8,
+    # ECC-protected KV cache dtypes (1 byte per element)
+    "int4_ecc": torch.uint8,      # SECDED(8,4)
+    "int4_hamming": torch.uint8,  # Hamming(7,4)
+    "int4_ecc_lsq": torch.uint8,  # LSQ + SECDED(16,11)
 }
 
 TORCH_DTYPE_TO_NUMPY_DTYPE = {

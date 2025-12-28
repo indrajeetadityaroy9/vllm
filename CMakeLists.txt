@@ -292,8 +292,9 @@ endif()
 set(VLLM_EXT_SRC
   "csrc/mamba/mamba_ssm/selective_scan_fwd.cu"
   "csrc/cache_kernels.cu"
-  "csrc/attention/paged_attention_v1.cu"
-  "csrc/attention/paged_attention_v2.cu"
+  # DISABLED FOR ECC-ONLY BUILD: PagedAttention not needed (using FlashAttention v3)
+  # "csrc/attention/paged_attention_v1.cu"
+  # "csrc/attention/paged_attention_v2.cu"
   "csrc/attention/merge_attn_states.cu"
   "csrc/attention/vertical_slash_index.cu"
   "csrc/pos_encoding_kernels.cu"
@@ -379,7 +380,8 @@ if(VLLM_GPU_LANG STREQUAL "CUDA")
   # marlin arches for other files
   cuda_archs_loose_intersection(MARLIN_OTHER_ARCHS "7.5;8.0+PTX" "${CUDA_ARCHS}")
 
-  if (MARLIN_OTHER_ARCHS)
+  # DISABLED FOR ECC-ONLY BUILD: Marlin quantization not needed
+  if (FALSE AND MARLIN_OTHER_ARCHS)
 
     #
     # For the Marlin kernels we automatically generate sources for various
@@ -488,8 +490,9 @@ if(VLLM_GPU_LANG STREQUAL "CUDA")
   endif()
 
   # Only build AllSpark kernels if we are building for at least some compatible archs.
+  # DISABLED FOR ECC-ONLY BUILD: AllSpark not needed
   cuda_archs_loose_intersection(ALLSPARK_ARCHS "8.0;8.6;8.7;8.9" "${CUDA_ARCHS}")
-  if (ALLSPARK_ARCHS)
+  if (FALSE AND ALLSPARK_ARCHS)
     set(ALLSPARK_SRCS
        "csrc/quantization/gptq_allspark/allspark_repack.cu"
        "csrc/quantization/gptq_allspark/allspark_qgemm_w8a16.cu")
@@ -815,8 +818,9 @@ if(VLLM_GPU_LANG STREQUAL "CUDA")
 
   # The machete kernels only work on hopper and require CUDA 12.0 or later.
   # Only build Machete kernels if we are building for something compatible with sm90a
+  # DISABLED FOR ECC-ONLY BUILD: Machete quantization not needed
   cuda_archs_loose_intersection(MACHETE_ARCHS "9.0a" "${CUDA_ARCHS}")
-  if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.0 AND MACHETE_ARCHS)
+  if(FALSE AND ${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.0 AND MACHETE_ARCHS)
     #
     # For the Machete kernels we automatically generate sources for various
     # preselected input type pairs and schedules.
@@ -881,8 +885,9 @@ if(VLLM_GPU_LANG STREQUAL "CUDA")
   endif()
 
   # Only build W4A8 kernels if we are building for something compatible with sm90a
+  # DISABLED FOR ECC-ONLY BUILD: W4A8 quantization not needed
   cuda_archs_loose_intersection(W4A8_ARCHS "9.0a" "${CUDA_ARCHS}")
-  if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.0 AND W4A8_ARCHS)
+  if(FALSE AND ${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.0 AND W4A8_ARCHS)
     set(SRCS
        "csrc/quantization/cutlass_w4a8/w4a8_mm_entry.cu"
        "csrc/quantization/cutlass_w4a8/w4a8_grouped_mm_entry.cu"
@@ -960,7 +965,10 @@ endif()
 # Enable ECC (Error Correction Code) compile flag if requested
 if(VLLM_ECC_ENABLED)
   target_compile_definitions(_C PRIVATE VLLM_ECC_ENABLED)
-  target_sources(_C PRIVATE "csrc/ecc/ecc_kernels.cu")
+  target_sources(_C PRIVATE
+    "csrc/ecc/ecc_kernels.cu"
+    "csrc/ecc/lsq_kernels.cu"
+    "csrc/ecc/paged_attention_lsq.cu")
   message(STATUS "ECC protection enabled - adding VLLM_ECC_ENABLED compile definition")
 endif()
 
@@ -1107,18 +1115,19 @@ if(VLLM_GPU_LANG STREQUAL "CUDA")
   endif()
 endif()
 
-message(STATUS "Enabling moe extension.")
-define_extension_target(
-  _moe_C
-  DESTINATION vllm
-  LANGUAGE ${VLLM_GPU_LANG}
-  SOURCES ${VLLM_MOE_EXT_SRC}
-  COMPILE_FLAGS ${VLLM_GPU_FLAGS}
-  ARCHITECTURES ${VLLM_GPU_ARCHES}
-  INCLUDE_DIRECTORIES ${CUTLASS_INCLUDE_DIR}
-  INCLUDE_DIRECTORIES ${CUTLASS_TOOLS_UTIL_INCLUDE_DIR}
-  USE_SABI 3
-  WITH_SOABI)
+# DISABLED FOR ECC-ONLY BUILD: MOE not needed for ECC testing
+# message(STATUS "Enabling moe extension.")
+# define_extension_target(
+#   _moe_C
+#   DESTINATION vllm
+#   LANGUAGE ${VLLM_GPU_LANG}
+#   SOURCES ${VLLM_MOE_EXT_SRC}
+#   COMPILE_FLAGS ${VLLM_GPU_FLAGS}
+#   ARCHITECTURES ${VLLM_GPU_ARCHES}
+#   INCLUDE_DIRECTORIES ${CUTLASS_INCLUDE_DIR}
+#   INCLUDE_DIRECTORIES ${CUTLASS_TOOLS_UTIL_INCLUDE_DIR}
+#   USE_SABI 3
+#   WITH_SOABI)
 
 if(VLLM_GPU_LANG STREQUAL "HIP")
   #
@@ -1147,8 +1156,9 @@ endif()
 
 # For CUDA we also build and ship some external projects.
 if (VLLM_GPU_LANG STREQUAL "CUDA")
-    include(cmake/external_projects/flashmla.cmake)
-    include(cmake/external_projects/qutlass.cmake)
+    # DISABLED FOR ECC-ONLY BUILD: FlashMLA not needed for ECC testing
+    # include(cmake/external_projects/flashmla.cmake)
+    # include(cmake/external_projects/qutlass.cmake)
 
     # vllm-flash-attn should be last as it overwrites some CMake functions
     include(cmake/external_projects/vllm_flash_attn.cmake)

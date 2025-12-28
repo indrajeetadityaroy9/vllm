@@ -52,10 +52,26 @@ from vllm.v1.kv_cache_interface import AttentionSpec
 
 logger = init_logger(__name__)
 
+# ECC algorithm IDs matching csrc/ecc/ecc_kernels.cu
+_ECC_ALGORITHM_MAP = {
+    "int4_hamming": 0,    # Hamming(7,4)
+    "int4_ecc": 1,        # SECDED(8,4)
+}
+
 
 class FlashAttentionBackend(AttentionBackend):
     accept_output_buffer: bool = True
     supported_dtypes: ClassVar[list[torch.dtype]] = [torch.float16, torch.bfloat16]
+    supported_kv_cache_dtypes: ClassVar[list[CacheDType]] = [
+        "auto",
+        "fp8",
+        "fp8_e4m3",
+        "fp8_e5m2",
+        # ECC-protected dtypes (encode/decode handled separately)
+        "int4_ecc",
+        "int4_hamming",
+        "int4_ecc_lsq",
+    ]
 
     @staticmethod
     def get_supported_kernel_block_sizes() -> list[int | MultipleOf]:
@@ -149,6 +165,9 @@ class FlashAttentionBackend(AttentionBackend):
             return True
         if kv_cache_dtype.startswith("fp8"):
             return flash_attn_supports_fp8()
+        # ECC dtypes are handled by separate encode/decode kernels
+        if kv_cache_dtype.startswith("int4_"):
+            return kv_cache_dtype in cls.supported_kv_cache_dtypes
         return kv_cache_dtype in ["auto"]
 
     @classmethod
@@ -554,7 +573,10 @@ class FlashAttentionImpl(AttentionImpl):
         # Cache the batch invariant result for use in forward passes
         self.batch_invariant_enabled = vllm_is_batch_invariant()
 
-        if is_quantized_kv_cache(self.kv_cache_dtype) and not flash_attn_supports_fp8():
+        # Only check fp8 support for actual fp8 dtypes (not ECC dtypes)
+        if (self.kv_cache_dtype.startswith("fp8") and
+                is_quantized_kv_cache(self.kv_cache_dtype) and
+                not flash_attn_supports_fp8()):
             raise NotImplementedError(
                 "FlashAttention does not support fp8 kv-cache on this device."
             )
@@ -570,6 +592,120 @@ class FlashAttentionImpl(AttentionImpl):
             )
 
         self.supports_quant_query_input = True
+
+        # For ECC dtypes, we may need workspace for decode
+        # We'll lazily allocate this on first use
+        self._ecc_decode_workspace_k = None
+        self._ecc_decode_workspace_v = None
+
+    def _ecc_reshape_and_cache(
+        self,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        key_cache: torch.Tensor,
+        value_cache: torch.Tensor,
+        slot_mapping: torch.Tensor,
+    ) -> None:
+        """Write K/V to cache with ECC encoding.
+
+        This replaces reshape_and_cache_flash for ECC dtypes.
+        """
+        if self.kv_cache_dtype == "int4_ecc_lsq":
+            from vllm.attention.ops.lsq_ecc_cache import lsq_reshape_and_cache
+            lsq_reshape_and_cache(key, value, key_cache, value_cache,
+                                   slot_mapping, apply_rotation=True)
+        else:
+            # int4_ecc or int4_hamming
+            algorithm = _ECC_ALGORITHM_MAP[self.kv_cache_dtype]
+            torch.ops._C_cache_ops.ecc_encode(
+                key, value, key_cache, value_cache, slot_mapping, algorithm
+            )
+
+    def _ecc_decode_cache_for_attention(
+        self,
+        key_cache: torch.Tensor,
+        value_cache: torch.Tensor,
+        attn_metadata: "FlashAttentionMetadata",
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Decode ECC-protected cache for attention computation.
+
+        Efficiently decodes ONLY the tokens that will be accessed, using
+        block_table and seq_lens to determine which slots to decode.
+
+        Returns:
+            decoded_k: [total_kv_tokens, num_heads, head_size]
+            decoded_v: [total_kv_tokens, num_heads, head_size]
+            cu_seqlens_k: [num_seqs + 1] cumulative sequence lengths for K/V
+        """
+        # Get cache dimensions
+        # Cache shape for LSQ: [num_blocks, block_size, num_heads, head_size/2]
+        _, block_size, num_heads, _ = key_cache.shape
+        # For LSQ, head_size/2 is stored, so actual head_size is double
+        head_size = self.head_size
+
+        # Get sequence info
+        seq_lens = attn_metadata.seq_lens  # [num_seqs] actual lengths
+        block_table = attn_metadata.block_table  # [num_seqs, max_blocks]
+        num_seqs = seq_lens.shape[0]
+
+        # Total K/V tokens to decode
+        total_kv_tokens = seq_lens.sum().item()
+
+        # Build slot_mapping for all K/V tokens
+        # slot = block_table[seq_idx, block_idx] * block_size + offset_in_block
+        slot_mapping = torch.empty(total_kv_tokens, dtype=torch.int64,
+                                   device=key_cache.device)
+        # seq_start_locs for LSQ kernel (int64)
+        seq_start_locs = torch.zeros(num_seqs + 1, dtype=torch.int64,
+                                     device=key_cache.device)
+
+        # Build slot mapping and sequence start locations
+        offset = 0
+        for seq_idx in range(num_seqs):
+            seq_len = seq_lens[seq_idx].item()
+            seq_start_locs[seq_idx] = offset
+
+            # Map each token in this sequence to its cache slot
+            for token_idx in range(seq_len):
+                block_idx = token_idx // block_size
+                offset_in_block = token_idx % block_size
+                block_num = block_table[seq_idx, block_idx].item()
+                slot = block_num * block_size + offset_in_block
+                slot_mapping[offset + token_idx] = slot
+
+            offset += seq_len
+
+        seq_start_locs[num_seqs] = offset
+
+        # cu_seqlens_k for flash attention (int32)
+        cu_seqlens_k = seq_start_locs.to(torch.int32)
+
+        # Allocate output workspace
+        workspace_k = torch.empty(total_kv_tokens, num_heads, head_size,
+                                  dtype=torch.float16, device=key_cache.device)
+        workspace_v = torch.empty_like(workspace_k)
+
+        # Call decode kernel
+        if self.kv_cache_dtype == "int4_ecc_lsq":
+            from vllm.attention.ops.lsq_ecc_cache import lsq_gather_and_decode
+            lsq_gather_and_decode(
+                key_cache, value_cache,
+                slot_mapping, seq_start_locs,  # LSQ kernel uses int64
+                workspace_k, workspace_v,
+                total_kv_tokens, num_heads, head_size, block_size, num_seqs
+            )
+        else:
+            # int4_ecc or int4_hamming
+            algorithm = _ECC_ALGORITHM_MAP[self.kv_cache_dtype]
+            torch.ops._C_cache_ops.ecc_gather_decode(
+                key_cache, value_cache,
+                slot_mapping, seq_start_locs,  # ECC kernel uses int64
+                workspace_k, workspace_v,
+                total_kv_tokens, num_heads, head_size, block_size,
+                num_seqs, algorithm
+            )
+
+        return workspace_k, workspace_v, cu_seqlens_k
 
     def forward(
         self,
@@ -653,16 +789,26 @@ class FlashAttentionImpl(AttentionImpl):
             # and value[:num_actual_tokens] because the reshape_and_cache_flash
             # op uses the slot_mapping's shape to determine the number of
             # actual tokens.
-            reshape_and_cache_flash(
-                key,
-                value,
-                key_cache,
-                value_cache,
-                attn_metadata.slot_mapping,
-                self.kv_cache_dtype,
-                layer._k_scale,
-                layer._v_scale,
-            )
+            if self.kv_cache_dtype.startswith("int4_"):
+                # ECC dtypes use custom encode/decode path
+                self._ecc_reshape_and_cache(
+                    key,
+                    value,
+                    key_cache,
+                    value_cache,
+                    attn_metadata.slot_mapping,
+                )
+            else:
+                reshape_and_cache_flash(
+                    key,
+                    value,
+                    key_cache,
+                    value_cache,
+                    attn_metadata.slot_mapping,
+                    self.kv_cache_dtype,
+                    layer._k_scale,
+                    layer._v_scale,
+                )
 
         if self.kv_cache_dtype.startswith("fp8"):
             # queries are quantized in the attention layer
@@ -671,6 +817,82 @@ class FlashAttentionImpl(AttentionImpl):
             )
             key_cache = key_cache.view(dtype)
             value_cache = value_cache.view(dtype)
+        elif self.kv_cache_dtype.startswith("int4_"):
+            # ECC dtypes: Split between decode (fused kernel) and prefill (shim)
+            is_decode_phase = (attn_metadata.max_query_len == 1)
+
+            if is_decode_phase and self.kv_cache_dtype == "int4_ecc_lsq":
+                # === DECODE PHASE: Use fused LSQ PagedAttention kernel ===
+                # This avoids O(T^2) memory traffic by decoding on-the-fly
+                num_seqs = attn_metadata.seq_lens.shape[0]
+
+                # For LSQ, rotate query to match rotated keys
+                from vllm.attention.ops.lsq_ecc_cache import rotate_queries_for_lsq
+                query_fp16 = query[:num_seqs].to(torch.float16)
+                query_rotated = rotate_queries_for_lsq(query_fp16, apply_rotation=True)
+
+                # Allocate fp16 output
+                ecc_output = torch.empty(
+                    num_seqs, self.num_heads, self.head_size,
+                    dtype=torch.float16, device=query.device
+                )
+
+                # Call fused kernel
+                torch.ops._C_cache_ops.paged_attention_lsq_v1(
+                    ecc_output,
+                    query_rotated,
+                    key_cache,
+                    value_cache,
+                    attn_metadata.block_table,
+                    attn_metadata.seq_lens.to(torch.int32),
+                    self.scale,
+                    self.block_size,
+                )
+
+                # Convert back to original dtype
+                output[:num_seqs].copy_(ecc_output.to(output.dtype))
+                return output
+
+            else:
+                # === PREFILL PHASE: Use shim (decode to workspace + flash_attn) ===
+                # This is O(T^2) but only runs once per request
+                decoded_k, decoded_v, cu_seqlens_k = self._ecc_decode_cache_for_attention(
+                    key_cache, value_cache, attn_metadata
+                )
+
+                # ECC kernels output float16. Convert query to match.
+                query_fp16 = query[:num_actual_tokens].to(torch.float16)
+
+                # For LSQ, rotate query to match rotated keys
+                if self.kv_cache_dtype == "int4_ecc_lsq":
+                    from vllm.attention.ops.lsq_ecc_cache import rotate_queries_for_lsq
+                    query_fp16 = rotate_queries_for_lsq(query_fp16, apply_rotation=True)
+
+                # Allocate fp16 output
+                ecc_output = torch.empty_like(output[:num_actual_tokens], dtype=torch.float16)
+
+                # Use non-paged flash attention (no block_table)
+                flash_attn_varlen_func(
+                    q=query_fp16,
+                    k=decoded_k,
+                    v=decoded_v,
+                    out=ecc_output,
+                    cu_seqlens_q=attn_metadata.query_start_loc,
+                    max_seqlen_q=attn_metadata.max_query_len,
+                    cu_seqlens_k=cu_seqlens_k,
+                    max_seqlen_k=attn_metadata.max_seq_len,
+                    softmax_scale=self.scale,
+                    causal=attn_metadata.causal,
+                    alibi_slopes=self.alibi_slopes,
+                    window_size=self.sliding_window,
+                    block_table=None,  # Non-paged mode
+                    softcap=self.logits_soft_cap,
+                    fa_version=self.vllm_flash_attn_version,
+                )
+
+                # Convert back to original dtype
+                output[:num_actual_tokens].copy_(ecc_output)
+                return output
 
         if not attn_metadata.use_cascade:
             cu_seqlens_q = attn_metadata.query_start_loc
